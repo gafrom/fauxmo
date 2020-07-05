@@ -338,40 +338,26 @@ class upnp_broadcast_responder(object):
     self.devices = []
 
   def init_socket(self):
-    ok = True
     self.ip = '239.255.255.250'
     self.port = 1900
 
     for attempt in range(15):
+      ok = True
       try:
-        ok = True
         #This is needed to join a multicast group
         self.mreq = struct.pack("4sl",socket.inet_aton(self.ip),socket.INADDR_ANY)
 
         #Set up server socket
         self.ssock = socket.socket(socket.AF_INET,socket.SOCK_DGRAM,socket.IPPROTO_UDP)
         self.ssock.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
+        self.ssock.bind(('', self.port))
+        self.ssock.setsockopt(socket.IPPROTO_IP,socket.IP_ADD_MEMBERSHIP,self.mreq)
 
-        try:
-          self.ssock.bind(('', self.port))
-        except Exception, e:
-          dbg("WARNING: Failed %s attempt to bind %s:%d: %s" % (attempt, self.ip, self.port, e))
-          ok = False
-
-        try:
-          self.ssock.setsockopt(socket.IPPROTO_IP,socket.IP_ADD_MEMBERSHIP,self.mreq)
-        except Exception, e:
-          dbg("WARNING: Failed %s attempt to join multicast group: %s" % (attempt, e))
-          ok = False
-
-        if ok: break
-        else:
-          self.shutdown()
-          time.sleep(1.5**attempt) # the max is 1.5**15 = 7 minutes of wait time
-          continue
-
+        break
       except Exception, e:
+        ok = False
         dbg("Failed %s attempt to initialize UPnP sockets: %s" % (attempt, e))
+        time.sleep(1.5**attempt) # the max is 1.5**15 = 7 minutes of wait time
         continue
 
     if ok:
