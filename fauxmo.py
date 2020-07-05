@@ -332,77 +332,84 @@ class fauxmo(upnp_device):
 # doesn't search for root devices.
 
 class upnp_broadcast_responder(object):
-    TIMEOUT = 0
+  TIMEOUT = 0
 
-    def __init__(self):
-        self.devices = []
+  def __init__(self):
+    self.devices = []
 
-    def init_socket(self):
-        ok = True
-        self.ip = '239.255.255.250'
-        self.port = 1900
-        try:
-            #This is needed to join a multicast group
-            self.mreq = struct.pack("4sl",socket.inet_aton(self.ip),socket.INADDR_ANY)
+  def init_socket(self):
+    ok = True
+    self.ip = '239.255.255.250'
+    self.port = 1900
+    for attempt in range(5):
+      try:
+        #This is needed to join a multicast group
+        self.mreq = struct.pack("4sl",socket.inet_aton(self.ip),socket.INADDR_ANY)
 
-            #Set up server socket
-            self.ssock = socket.socket(socket.AF_INET,socket.SOCK_DGRAM,socket.IPPROTO_UDP)
-            self.ssock.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
-
-            try:
-                self.ssock.bind(('',self.port))
-            except Exception, e:
-                dbg("WARNING: Failed to bind %s:%d: %s" , (self.ip,self.port,e))
-                ok = False
-
-            try:
-                self.ssock.setsockopt(socket.IPPROTO_IP,socket.IP_ADD_MEMBERSHIP,self.mreq)
-            except Exception, e:
-                dbg('WARNING: Failed to join multicast group:',e)
-                ok = False
-
-        except Exception, e:
-            dbg("Failed to initialize UPnP sockets:",e)
-            return False
-        if ok:
-            dbg("Listening for UPnP broadcasts")
-
-    def fileno(self):
-        return self.ssock.fileno()
-
-    def do_read(self, fileno):
-        dbg("reading")
-        data, sender = self.recvfrom(1024)
-        if data:
-            dbg("data: %s" % (data))
-            if data.find('M-SEARCH') == 0 and data.find('upnp:rootdevice') != -1:
-                for device in self.devices:
-                    time.sleep(0.1)
-                    device.respond_to_search(sender)
-            else:
-                pass
-
-    #Receive network data
-    def recvfrom(self,size):
-        if self.TIMEOUT:
-            self.ssock.setblocking(0)
-            ready = select.select([self.ssock], [], [], self.TIMEOUT)[0]
-        else:
-            self.ssock.setblocking(1)
-            ready = True
+        #Set up server socket
+        self.ssock = socket.socket(socket.AF_INET,socket.SOCK_DGRAM,socket.IPPROTO_UDP)
+        self.ssock.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
 
         try:
-            if ready:
-                return self.ssock.recvfrom(size)
-            else:
-                return False, False
+          self.ssock.bind(('', self.port))
         except Exception, e:
-            dbg(e)
-            return False, False
+          dbg("WARNING: Failed to bind %s:%d: %s" , (self.ip, self.port, e))
+          ok = False
 
-    def add_device(self, device):
-        self.devices.append(device)
-        dbg("UPnP broadcast listener: new device registered")
+        try:
+          self.ssock.setsockopt(socket.IPPROTO_IP,socket.IP_ADD_MEMBERSHIP,self.mreq)
+        except Exception, e:
+          dbg("WARNING: Failed to join multicast group: %s" % e)
+          ok = False
+
+      except Exception, e:
+        dbg("Failed %s attempt to initialize UPnP sockets: %s" % (attempt, e))
+        continue
+
+    if ok:
+      dbg("Listening for UPnP broadcasts")
+    else: return False
+
+  def shutdown(self):
+    self.ssock.shutdown(socket.SHUT_RDWR)
+    self.ssock.close()
+
+  def fileno(self):
+    return self.ssock.fileno()
+
+  def do_read(self, fileno):
+    dbg("reading")
+    data, sender = self.recvfrom(1024)
+    if data:
+      dbg("data: %s" % (data))
+      if data.find('M-SEARCH') == 0 and data.find('upnp:rootdevice') != -1:
+        for device in self.devices:
+          time.sleep(0.1)
+          device.respond_to_search(sender)
+      else:
+        pass
+
+  #Receive network data
+  def recvfrom(self,size):
+    if self.TIMEOUT:
+      self.ssock.setblocking(0)
+      ready = select.select([self.ssock], [], [], self.TIMEOUT)[0]
+    else:
+      self.ssock.setblocking(1)
+      ready = True
+
+    try:
+      if ready:
+        return self.ssock.recvfrom(size)
+      else:
+        return False, False
+    except Exception, e:
+      dbg(e)
+      return False, False
+
+  def add_device(self, device):
+    self.devices.append(device)
+    dbg("UPnP broadcast listener: new device registered")
 
 # Set up our singleton for polling the sockets for data ready
 p = poller()
@@ -423,12 +430,13 @@ dbg("Entering main loop\n")
 
 # tidy up when leaving
 atexit.register(GPIO.cleanup)
+atexit.register(u.shutdown)
 
 while True:
-    try:
-        # Allow time for a ctrl-c to stop the process
-        p.poll(100)
-        time.sleep(0.1)
-    except Exception, e:
-        dbg(e)
-        break
+  try:
+    # Allow time for a ctrl-c to stop the process
+    p.poll(100)
+    time.sleep(0.1)
+  except Exception, e:
+    dbg(e)
+    break
