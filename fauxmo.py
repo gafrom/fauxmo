@@ -341,6 +341,7 @@ class upnp_broadcast_responder(object):
     ok = True
     self.ip = '239.255.255.250'
     self.port = 1900
+
     for attempt in range(5):
       try:
         #This is needed to join a multicast group
@@ -353,14 +354,18 @@ class upnp_broadcast_responder(object):
         try:
           self.ssock.bind(('', self.port))
         except Exception, e:
-          dbg("WARNING: Failed to bind %s:%d: %s" , (self.ip, self.port, e))
+          dbg("WARNING: Failed %s attempt to bind %s:%d: %s" % (attempt, self.ip, self.port, e))
           ok = False
+          continue
 
         try:
           self.ssock.setsockopt(socket.IPPROTO_IP,socket.IP_ADD_MEMBERSHIP,self.mreq)
         except Exception, e:
-          dbg("WARNING: Failed to join multicast group: %s" % e)
+          dbg("WARNING: Failed %s attempt to join multicast group: %s" % (attempt, e))
           ok = False
+          continue
+
+        break
 
       except Exception, e:
         dbg("Failed %s attempt to initialize UPnP sockets: %s" % (attempt, e))
@@ -368,7 +373,9 @@ class upnp_broadcast_responder(object):
 
     if ok:
       dbg("Listening for UPnP broadcasts")
-    else: return False
+      return True
+
+    return False
 
   def shutdown(self):
     self.ssock.shutdown(socket.SHUT_RDWR)
