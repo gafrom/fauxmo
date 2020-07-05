@@ -1,68 +1,93 @@
 #!/usr/bin/env python
 
-"""
-The MIT License (MIT)
-
-Copyright (c) 2015 Maker Musings
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in
-all copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
-THE SOFTWARE.
-"""
-
-# For a complete discussion, see http://www.makermusings.com
-
 import email.utils
 import requests
 import select
 import socket
 import struct
 import sys
+import atexit
 import time
 import urllib
 import uuid
 
+from RPi import GPIO
 
+
+DEBUG = True if len(sys.argv) > 1 and sys.argv[1] == '-d' else False
+
+def dbg(msg):
+  global DEBUG
+  if DEBUG:
+    print msg
+    sys.stdout.flush()
+
+# name = of the virtual switch
+# handler = object with 'on' and 'off' methods
+# ip = ip address, defaults to current ip address
+# port = port, defaults to 0 (dynamicly assigned)
+class Device(object):
+  def __init__(self, name, handler, ip = None, port = 0):
+    self.name, self.handler, self.ip, self.port = name, handler, ip, port
+
+# This is an example handler class. The fauxmo class expects handlers to be
+# instances of objects that have on() and off() methods that return True
+# on success and False otherwise.
+class RaspberryHandler(object):
+  def __init__(self, pin):
+    self.pin = pin
+    self.pi = GPIO
+    self.pi.setmode(self.pi.BCM)
+    self.pi.setup(pin, self.pi.OUT)
+
+  def on(self):
+    # setting it as LOW, because relays are usually "active low"
+    self.pi.output(self.pin, 0)
+    return True
+
+  def off(self):
+    # setting it as HIGH, because relays are usually "active low"
+    self.pi.output(self.pin, 1)
+    return True
+
+  def state(self):
+    # inverting the state because relays are usually "active low"
+    return 1 - self.pi.input(self.pin)
+
+
+# NOTE: As of 2015-08-17, the Echo appears to have a hard-coded limit of
+# 16 switches it can control. Only the first 16 elements of the FAUXMOS
+# list will be used.
+FAUXMOS = [
+  Device('kitchen5', RaspberryHandler(17), None, 54545)
+]
 
 # This XML is the minimum needed to define one of our virtual switches
 # to the Amazon Echo
-
 SETUP_XML = """<?xml version="1.0"?>
 <root>
   <device>
-    <deviceType>urn:MakerMusings:device:controllee:1</deviceType>
+    <deviceType>urn:Belkin:device:controllee:1</deviceType>
     <friendlyName>%(device_name)s</friendlyName>
     <manufacturer>Belkin International Inc.</manufacturer>
-    <modelName>Emulated Socket</modelName>
+    <modelName>Socket</modelName>
     <modelNumber>3.1415</modelNumber>
-    <UDN>uuid:Socket-1_0-%(device_serial)s</UDN>
+    <modelDescription>Belkin Plugin Socket 1.0</modelDescription>\r\n
+    <UDN>uuid:%(device_serial)s</UDN>
+    <serialNumber>221517K0101769</serialNumber>
+    <binaryState>0</binaryState>
+    <serviceList>
+      <service>
+        <serviceType>urn:Belkin:service:basicevent:1</serviceType>
+        <serviceId>urn:Belkin:serviceId:basicevent1</serviceId>
+        <controlURL>/upnp/control/basicevent1</controlURL>
+        <eventSubURL>/upnp/event/basicevent1</eventSubURL>
+        <SCPDURL>/eventservice.xml</SCPDURL>
+      </service>
+    </serviceList>
   </device>
 </root>
 """
-
-
-DEBUG = False
-
-def dbg(msg):
-    global DEBUG
-    if DEBUG:
-        print msg
-        sys.stdout.flush()
-
 
 # A simple utility class to wait for incoming data to be
 # ready on a socket.
@@ -171,7 +196,7 @@ class upnp_device(object):
     def get_name(self):
         return "unknown"
         
-    def respond_to_search(self, destination, search_target):
+    def respond_to_search(self, destination):
         dbg("Responding to search for %s" % self.get_name())
         date_str = email.utils.formatdate(timeval=None, localtime=False, usegmt=True)
         location_url = self.root_url % {'ip_address' : self.ip_address, 'port' : self.port}
@@ -182,9 +207,10 @@ class upnp_device(object):
                   "LOCATION: %s\r\n"
                   "OPT: \"http://schemas.upnp.org/upnp/1/0/\"; ns=01\r\n"
                   "01-NLS: %s\r\n"
-                  "SERVER: %s\r\n"
-                  "ST: %s\r\n"
-                  "USN: uuid:%s::%s\r\n" % (date_str, location_url, self.uuid, self.server_version, search_target, self.persistent_uuid, search_target))
+                  "SERVER: Unspecified, UPnP/1.0, Unspecified\r\n"
+                  "ST: urn:Belkin:device:**\r\n"
+                  "USN: uuid:%s::upnp:rootdevice\r\n"
+                  "X-User-Agent: redsonic\r\n\r\n" % (date_str, location_url, self.uuid, self.persistent_uuid))
         if self.other_headers:
             for header in self.other_headers:
                 message += "%s\r\n" % header
@@ -200,23 +226,23 @@ class fauxmo(upnp_device):
     def make_uuid(name):
         return ''.join(["%x" % sum([ord(c) for c in name])] + ["%x" % ord(c) for c in "%sfauxmo!" % name])[:14]
 
-    def __init__(self, name, listener, poller, ip_address, port, action_handler = None):
+    def __init__(self, name, listener, poller, ip_address, port, action_handler):
         self.serial = self.make_uuid(name)
         self.name = name
         self.ip_address = ip_address
+        self.action_handler = action_handler
+        dbg("IP: %s" % ip_address)
         persistent_uuid = "Socket-1_0-" + self.serial
         other_headers = ['X-User-Agent: redsonic']
         upnp_device.__init__(self, listener, poller, port, "http://%(ip_address)s:%(port)s/setup.xml", "Unspecified, UPnP/1.0, Unspecified", persistent_uuid, other_headers=other_headers, ip_address=ip_address)
-        if action_handler:
-            self.action_handler = action_handler
-        else:
-            self.action_handler = self
+
         dbg("FauxMo device '%s' ready on %s:%s" % (self.name, self.ip_address, self.port))
 
     def get_name(self):
         return self.name
 
     def handle_request(self, data, sender, socket):
+        # called once to setup connection when discovering a device
         if data.find('GET /setup.xml HTTP/1.1') == 0:
             dbg("Responding to setup.xml for %s" % self.name)
             xml = SETUP_XML % {'device_name' : self.name, 'device_serial' : self.serial}
@@ -232,23 +258,25 @@ class fauxmo(upnp_device):
                        "\r\n"
                        "%s" % (len(xml), date_str, xml))
             socket.send(message)
+        # called to toggle state
         elif data.find('SOAPACTION: "urn:Belkin:service:basicevent:1#SetBinaryState"') != -1:
+            dbg("Responding to SOAPACTION:set")
             success = False
+            soap = ''
             if data.find('<BinaryState>1</BinaryState>') != -1:
                 # on
                 dbg("Responding to ON for %s" % self.name)
+                soap = self._soap('set', 1)
                 success = self.action_handler.on()
             elif data.find('<BinaryState>0</BinaryState>') != -1:
                 # off
                 dbg("Responding to OFF for %s" % self.name)
+                soap = self._soap('set', 0)
                 success = self.action_handler.off()
             else:
-                dbg("Unknown Binary State request:")
+                dbg("[ERROR] Unknown Binary State request:")
                 dbg(data)
             if success:
-                # The echo is happy with the 200 status code and doesn't
-                # appear to care about the SOAP response body
-                soap = ""
                 date_str = email.utils.formatdate(timeval=None, localtime=False, usegmt=True)
                 message = ("HTTP/1.1 200 OK\r\n"
                            "CONTENT-LENGTH: %d\r\n"
@@ -261,15 +289,38 @@ class fauxmo(upnp_device):
                            "\r\n"
                            "%s" % (len(soap), date_str, soap))
                 socket.send(message)
+                dbg("Send response to SOAPACTION:set\r\n" + message)
+        # called (a) to complete the discovery of a device, (b) later on to get a state
+        elif data.find('SOAPACTION: "urn:Belkin:service:basicevent:1#GetBinaryState"') != -1:
+            dbg("Responding to SOAPACTION:get")
+
+            state = self.action_handler.state()
+            soap = self._soap('get', state)
+            date_str = email.utils.formatdate(timeval=None, localtime=False, usegmt=True)
+            message = ("HTTP/1.1 200 OK\r\n"
+                       "CONTENT-LENGTH: %d\r\n"
+                       "CONTENT-TYPE: text/xml charset=\"utf-8\"\r\n"
+                       "DATE: %s\r\n"
+                       "EXT:\r\n"
+                       "SERVER: Unspecified, UPnP/1.0, Unspecified\r\n"
+                       "X-User-Agent: redsonic\r\n"
+                       "CONNECTION: close\r\n"
+                       "\r\n"
+                       "%s" % (len(soap), date_str, soap))
+            socket.send(message)
+            dbg("Send response to SOAPACTION:get\r\n" + message)
         else:
+            dbg("[ERROR] Unknown request:\r\n")
             dbg(data)
 
-    def on(self):
-        return False
+    def _soap(self, method, state):
+      method = method.capitalize()
 
-    def off(self):
-        return True
-
+      return ("<s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\" s:encodingStyle=\"http://schemas.xmlsoap.org/soap/encoding/\"><s:Body>\r\n"
+              "<u:%sBinaryStateResponse xmlns:u=\"urn:Belkin:service:basicevent:1\">\r\n"
+              "<BinaryState>%s</BinaryState>\r\n"
+              "</u:%sBinaryStateResponse>\r\n"
+              "</s:Body></s:Envelope>\r\n" % (method, state, method))
 
 # Since we have a single process managing several virtual UPnP devices,
 # we only need a single listener for UPnP broadcasts. When a matching
@@ -320,12 +371,14 @@ class upnp_broadcast_responder(object):
         return self.ssock.fileno()
 
     def do_read(self, fileno):
+        dbg("reading")
         data, sender = self.recvfrom(1024)
         if data:
-            if data.find('M-SEARCH') == 0 and data.find('urn:Belkin:device:**') != -1:
+            dbg("data: %s" % (data))
+            if data.find('M-SEARCH') == 0 and data.find('upnp:rootdevice') != -1:
                 for device in self.devices:
                     time.sleep(0.1)
-                    device.respond_to_search(sender, 'urn:Belkin:device:**')
+                    device.respond_to_search(sender)
             else:
                 pass
 
@@ -351,47 +404,6 @@ class upnp_broadcast_responder(object):
         self.devices.append(device)
         dbg("UPnP broadcast listener: new device registered")
 
-
-# This is an example handler class. The fauxmo class expects handlers to be
-# instances of objects that have on() and off() methods that return True
-# on success and False otherwise.
-#
-# This example class takes two full URLs that should be requested when an on
-# and off command are invoked respectively. It ignores any return data.
-
-class rest_api_handler(object):
-    def __init__(self, on_cmd, off_cmd):
-        self.on_cmd = on_cmd
-        self.off_cmd = off_cmd
-
-    def on(self):
-        r = requests.get(self.on_cmd)
-        return r.status_code == 200
-
-    def off(self):
-        r = requests.get(self.off_cmd)
-        return r.status_code == 200
-
-
-# Each entry is a list with the following elements:
-#
-# name of the virtual switch
-# object with 'on' and 'off' methods
-# port # (optional; may be omitted)
-
-# NOTE: As of 2015-08-17, the Echo appears to have a hard-coded limit of
-# 16 switches it can control. Only the first 16 elements of the FAUXMOS
-# list will be used.
-
-FAUXMOS = [
-    ['office lights', rest_api_handler('http://192.168.5.4/ha-api?cmd=on&a=office', 'http://192.168.5.4/ha-api?cmd=off&a=office')],
-    ['kitchen lights', rest_api_handler('http://192.168.5.4/ha-api?cmd=on&a=kitchen', 'http://192.168.5.4/ha-api?cmd=off&a=kitchen')],
-]
-
-
-if len(sys.argv) > 1 and sys.argv[1] == '-d':
-    DEBUG = True
-
 # Set up our singleton for polling the sockets for data ready
 p = poller()
 
@@ -404,13 +416,13 @@ u.init_socket()
 p.add(u)
 
 # Create our FauxMo virtual switch devices
-for one_faux in FAUXMOS:
-    if len(one_faux) == 2:
-        # a fixed port wasn't specified, use a dynamic one
-        one_faux.append(0)
-    switch = fauxmo(one_faux[0], u, p, None, one_faux[2], action_handler = one_faux[1])
+for device in FAUXMOS:
+    fauxmo(device.name, u, p, device.ip, device.port, device.handler)
 
 dbg("Entering main loop\n")
+
+# tidy up when leaving
+atexit.register(GPIO.cleanup)
 
 while True:
     try:
@@ -420,4 +432,3 @@ while True:
     except Exception, e:
         dbg(e)
         break
-
