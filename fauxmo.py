@@ -342,7 +342,7 @@ class upnp_broadcast_responder(object):
     self.ip = '239.255.255.250'
     self.port = 1900
 
-    for attempt in range(5):
+    for attempt in range(15):
       try:
         ok = True
         #This is needed to join a multicast group
@@ -367,6 +367,7 @@ class upnp_broadcast_responder(object):
         if ok: break
         else:
           self.shutdown()
+          time.sleep(1.5**attempt) # the max is 1.5**15 = 7 minutes of wait time
           continue
 
       except Exception, e:
