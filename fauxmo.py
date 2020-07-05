@@ -344,6 +344,7 @@ class upnp_broadcast_responder(object):
 
     for attempt in range(5):
       try:
+        ok = True
         #This is needed to join a multicast group
         self.mreq = struct.pack("4sl",socket.inet_aton(self.ip),socket.INADDR_ANY)
 
@@ -356,16 +357,17 @@ class upnp_broadcast_responder(object):
         except Exception, e:
           dbg("WARNING: Failed %s attempt to bind %s:%d: %s" % (attempt, self.ip, self.port, e))
           ok = False
-          continue
 
         try:
           self.ssock.setsockopt(socket.IPPROTO_IP,socket.IP_ADD_MEMBERSHIP,self.mreq)
         except Exception, e:
           dbg("WARNING: Failed %s attempt to join multicast group: %s" % (attempt, e))
           ok = False
-          continue
 
-        break
+        if ok: break
+        else:
+          self.shutdown()
+          continue
 
       except Exception, e:
         dbg("Failed %s attempt to initialize UPnP sockets: %s" % (attempt, e))
@@ -375,7 +377,7 @@ class upnp_broadcast_responder(object):
       dbg("Listening for UPnP broadcasts")
       return True
 
-    return False
+    raise Exception("[ERROR] Failed to initialize a socket")
 
   def shutdown(self):
     self.ssock.shutdown(socket.SHUT_RDWR)
