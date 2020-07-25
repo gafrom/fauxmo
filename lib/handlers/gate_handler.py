@@ -6,12 +6,16 @@ class GateHandler(object):
     self._state = 0
  
   def on(self):
-    self.gate.left(5.7)
+    duration = 5.7 if self._state == 0 else 1
+
+    self.gate.left(duration)
     self._state = 1
     return True
 
   def off(self):
-    self.gate.right(5.1)
+    duration = 5.2 if self._state == 1 else 1
+
+    self.gate.right(duration)
     self._state = 0
     return True
 
